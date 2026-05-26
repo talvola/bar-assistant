@@ -29,21 +29,14 @@ class FlavorControllerTest extends TestCase
         $this->actingAs($membership->user);
         $this->withHeader('Bar-Assistant-Bar-Id', (string) $membership->bar_id);
 
-        CategoryAxes::create([
-            'category' => 'gin',
-            'axes_json' => ['juniper', 'citrus', 'floral', 'heat', 'spice', 'herbal', 'fruited'],
-        ]);
-        CategoryAxes::create([
-            'category' => 'amaro',
-            'axes_json' => ['bitter', 'sweet', 'citrus', 'herbal', 'dark', 'mint', 'root'],
-        ]);
-
+        // CategoryAxes are now pre-seeded by the migration (11 categories);
+        // gin + amaro are both present already.
         $response = $this->getJson('/api/flavor/categories');
 
         $response->assertOk();
-        $response->assertJsonCount(2, 'data');
         $response->assertJsonFragment(['category' => 'gin']);
         $response->assertJsonFragment(['category' => 'amaro']);
+        $response->assertJsonFragment(['category' => 'rum']);
     }
 
     public function test_ingredient_profile_returns_profile_with_provenance(): void
@@ -104,10 +97,7 @@ class FlavorControllerTest extends TestCase
         $this->actingAs($membership->user);
         $this->withHeader('Bar-Assistant-Bar-Id', (string) $membership->bar_id);
 
-        CategoryAxes::create([
-            'category' => 'gin',
-            'axes_json' => ['juniper', 'citrus', 'floral', 'heat', 'spice', 'herbal', 'fruited'],
-        ]);
+        // CategoryAxes (gin) already seeded by migration.
 
         // Three gins: in-pattern, slight stray (low juniper), hard-disqualified (high floral).
         $plymouth = $this->seedGin($membership->bar->id, 'Plymouth Navy',
@@ -175,6 +165,159 @@ class FlavorControllerTest extends TestCase
         $this->assertNotNull($jamesRow);
         $this->assertFalse($jamesRow['disqualified']);
         $this->assertGreaterThan(0, (float) $jamesRow['penalty']);
+    }
+
+    // ---- Slice 2: PUT/DELETE endpoints ------------------------------------
+
+    public function test_put_ingredient_profile_creates_rows(): void
+    {
+        $membership = $this->setupBarMembership();
+        $this->actingAs($membership->user);
+        $this->withHeader('Bar-Assistant-Bar-Id', (string) $membership->bar_id);
+
+        // gin axes seeded by migration.
+        $gin = Ingredient::factory()->for($membership->bar)->create(['name' => 'Plymouth Navy']);
+
+        $response = $this->putJson("/api/ingredients/{$gin->id}/flavor-profile", [
+            'category' => 'gin',
+            'profile' => ['juniper' => 3, 'citrus' => 2, 'floral' => 0, 'heat' => 3, 'spice' => 2, 'herbal' => 0, 'fruited' => 0],
+            'source' => 'tgii',
+            'confidence' => 'high',
+            'notes' => 'Test',
+            'scored_at' => '2026-05-26',
+        ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('data.profile.juniper', 3);
+        $response->assertJsonPath('data.category', 'gin');
+        $response->assertJsonPath('data.source', 'tgii');
+        $this->assertSame(7, IngredientProfile::where('ingredient_id', $gin->id)->count());
+        $this->assertSame('gin', IngredientCategory::where('ingredient_id', $gin->id)->value('category'));
+    }
+
+    public function test_put_ingredient_profile_rejects_unknown_axis(): void
+    {
+        $membership = $this->setupBarMembership();
+        $this->actingAs($membership->user);
+        $this->withHeader('Bar-Assistant-Bar-Id', (string) $membership->bar_id);
+
+        // gin axes seeded by migration.
+        $gin = Ingredient::factory()->for($membership->bar)->create();
+
+        $response = $this->putJson("/api/ingredients/{$gin->id}/flavor-profile", [
+            'category' => 'gin',
+            'profile' => ['juniper' => 3, 'WRONG_AXIS' => 2],
+        ]);
+        $response->assertStatus(422);
+        $response->assertJsonPath('unknown_axes.0', 'WRONG_AXIS');
+    }
+
+    public function test_put_ingredient_profile_replaces_existing_rows(): void
+    {
+        $membership = $this->setupBarMembership();
+        $this->actingAs($membership->user);
+        $this->withHeader('Bar-Assistant-Bar-Id', (string) $membership->bar_id);
+
+        // gin + aquavit axes seeded by migration.
+        $ing = Ingredient::factory()->for($membership->bar)->create();
+
+        // Initial profile in gin
+        $this->putJson("/api/ingredients/{$ing->id}/flavor-profile", [
+            'category' => 'gin',
+            'profile' => ['juniper' => 3, 'citrus' => 2, 'floral' => 0, 'heat' => 3, 'spice' => 2, 'herbal' => 0, 'fruited' => 0],
+        ])->assertOk();
+        $this->assertSame(7, IngredientProfile::where('ingredient_id', $ing->id)->count());
+
+        // Re-categorize as aquavit (6 axes) — `fruited` row from gin should be gone.
+        $this->putJson("/api/ingredients/{$ing->id}/flavor-profile", [
+            'category' => 'aquavit',
+            'profile' => ['juniper' => 2, 'citrus' => 1, 'floral' => 0, 'heat' => 1, 'spice' => 3, 'herbal' => 2],
+        ])->assertOk();
+        $this->assertSame(6, IngredientProfile::where('ingredient_id', $ing->id)->count());
+        $this->assertSame('aquavit', IngredientCategory::where('ingredient_id', $ing->id)->value('category'));
+        $this->assertNull(IngredientProfile::where('ingredient_id', $ing->id)->where('axis', 'fruited')->first());
+    }
+
+    public function test_put_slot_meta_and_constraints_roundtrip(): void
+    {
+        $membership = $this->setupBarMembership();
+        $this->actingAs($membership->user);
+        $this->withHeader('Bar-Assistant-Bar-Id', (string) $membership->bar_id);
+
+        // gin axes seeded by migration.
+        $cocktail = Cocktail::factory()->for($membership->bar)->create();
+
+        $this->putJson("/api/cocktails/{$cocktail->id}/slots/2/meta", [
+            'category' => 'gin',
+            'tolerance' => 'style',
+            'also_accept_categories' => ['aquavit'],
+        ])->assertOk();
+        $this->assertSame('gin', SlotMeta::where('cocktail_id', $cocktail->id)->where('sort', 2)->value('category'));
+
+        // Band constraint
+        $this->putJson("/api/cocktails/{$cocktail->id}/slots/2/constraints/juniper", [
+            'kind' => 'band',
+            'lo' => 2,
+            'hi' => 3,
+            'out_weight' => 1.5,
+            'hard' => false,
+        ])->assertOk();
+        $row = SlotConstraint::where('cocktail_id', $cocktail->id)->where('sort', 2)->where('axis', 'juniper')->first();
+        $this->assertSame('band', $row->kind);
+        $this->assertSame(2, $row->band_lo);
+        $this->assertSame(3, $row->band_hi);
+
+        // Hard band overwrites the previous
+        $this->putJson("/api/cocktails/{$cocktail->id}/slots/2/constraints/juniper", [
+            'kind' => 'band', 'lo' => 1, 'hi' => 3, 'hard' => true, 'out_weight' => 2.0,
+        ])->assertOk();
+        $row->refresh();
+        $this->assertSame(1, $row->band_lo);
+        $this->assertTrue((bool) $row->hard);
+
+        // Point constraint on a different axis
+        $this->putJson("/api/cocktails/{$cocktail->id}/slots/2/constraints/citrus", [
+            'kind' => 'point', 'value' => 2, 'weight' => 1.0,
+        ])->assertOk();
+        $this->assertSame(2, SlotConstraint::where('cocktail_id', $cocktail->id)->where('sort', 2)->count());
+
+        // Delete one constraint
+        $this->deleteJson("/api/cocktails/{$cocktail->id}/slots/2/constraints/juniper")->assertOk();
+        $this->assertSame(1, SlotConstraint::where('cocktail_id', $cocktail->id)->where('sort', 2)->count());
+    }
+
+    public function test_put_slot_constraint_rejects_axis_not_in_category(): void
+    {
+        $membership = $this->setupBarMembership();
+        $this->actingAs($membership->user);
+        $this->withHeader('Bar-Assistant-Bar-Id', (string) $membership->bar_id);
+
+        // gin (seeded by migration) has axes juniper/citrus/floral/heat/spice/herbal/fruited — `bitter` is NOT in the list.
+        $cocktail = Cocktail::factory()->for($membership->bar)->create();
+
+        // Meta declares the slot as gin
+        $this->putJson("/api/cocktails/{$cocktail->id}/slots/1/meta", ['category' => 'gin'])->assertOk();
+
+        // `bitter` isn't in gin's axes
+        $response = $this->putJson("/api/cocktails/{$cocktail->id}/slots/1/constraints/bitter", [
+            'kind' => 'band', 'lo' => 2, 'hi' => 3,
+        ]);
+        $response->assertStatus(422);
+    }
+
+    public function test_put_slot_constraint_requires_existing_meta(): void
+    {
+        $membership = $this->setupBarMembership();
+        $this->actingAs($membership->user);
+        $this->withHeader('Bar-Assistant-Bar-Id', (string) $membership->bar_id);
+
+        // gin already seeded
+        $cocktail = Cocktail::factory()->for($membership->bar)->create();
+
+        // No SlotMeta yet — constraint PUT should fail
+        $this->putJson("/api/cocktails/{$cocktail->id}/slots/1/constraints/juniper", [
+            'kind' => 'band', 'lo' => 2, 'hi' => 3,
+        ])->assertStatus(422);
     }
 
     /**

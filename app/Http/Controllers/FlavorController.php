@@ -5,16 +5,21 @@ declare(strict_types=1);
 namespace Kami\Cocktail\Http\Controllers;
 
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Validator;
 use Kami\Cocktail\Models\Cocktail;
 use Kami\Cocktail\Models\Flavor\CategoryAxes;
 use Kami\Cocktail\Models\Flavor\IngredientCategory;
 use Kami\Cocktail\Models\Flavor\IngredientProfile;
+use Kami\Cocktail\Models\Flavor\SlotConstraint;
+use Kami\Cocktail\Models\Flavor\SlotMeta;
 use Kami\Cocktail\Models\Ingredient;
 use Kami\Cocktail\Services\Flavor\FlavorService;
 
 /**
- * Read-only endpoints for the flavor-matching engine. Slice 1 of Phase B —
- * editing endpoints (PUT/DELETE) come in Slice 2/3.
+ * Endpoints for the flavor-matching engine. Slice 1 added read-only endpoints;
+ * Slice 2 adds upserts for ingredient profiles + slot meta + slot constraints
+ * so the Phase A SQLite can be ported in via scripts/port_phase_a_to_ba.py.
  */
 class FlavorController extends Controller
 {
@@ -153,6 +158,242 @@ class FlavorController extends Controller
                 'alternatives' => $payload,
             ],
         ]);
+    }
+
+    /**
+     * PUT /api/ingredients/{id}/flavor-profile
+     *
+     * Upsert the ingredient's category + per-axis profile + provenance.
+     *
+     * Body:
+     *   {category, profile: {axis: value}, source?, confidence?, notes?,
+     *    suggestable_for_classics?, scored_at?}
+     *
+     * Validates that the category exists in flavor_category_axes and that all
+     * axes in `profile` belong to that category. Replaces all existing profile
+     * rows for this ingredient (other-axis rows from a previous category get
+     * deleted) — keeps the data clean across category changes.
+     */
+    public function putIngredientProfile(Request $request, int $id): JsonResponse
+    {
+        $ingredient = Ingredient::query()->filterByBar()->where('id', $id)->first();
+        if (!$ingredient) {
+            return response()->json(['message' => 'Ingredient not found'], 404);
+        }
+
+        $data = $request->validate([
+            'category' => 'required|string|max:64',
+            'profile' => 'required|array|min:1',
+            'profile.*' => 'integer|min:0|max:3',
+            'source' => 'nullable|string|max:32',
+            'confidence' => 'nullable|string|in:high,medium,low',
+            'notes' => 'nullable|string',
+            'suggestable_for_classics' => 'nullable|boolean',
+            'scored_at' => 'nullable|date_format:Y-m-d',
+        ]);
+
+        $axes = CategoryAxes::where('category', $data['category'])->first();
+        if (!$axes) {
+            return response()->json(['message' => "Unknown category '{$data['category']}'. Configure via flavor_category_axes."], 422);
+        }
+        $validAxes = $axes->axes();
+        $unknown = array_diff(array_keys($data['profile']), $validAxes);
+        if (!empty($unknown)) {
+            return response()->json([
+                'message' => 'Profile contains axes not in this category',
+                'unknown_axes' => array_values($unknown),
+                'valid_axes' => $validAxes,
+            ], 422);
+        }
+
+        IngredientCategory::updateOrCreate(
+            ['ingredient_id' => $id],
+            ['category' => $data['category']],
+        );
+
+        // Replace strategy: drop all existing profile rows for this ingredient,
+        // then write the new ones. Keeps the data clean if the category changes
+        // (axes from the old category get evicted).
+        IngredientProfile::where('ingredient_id', $id)->delete();
+        foreach ($data['profile'] as $axis => $value) {
+            IngredientProfile::create([
+                'ingredient_id' => $id,
+                'axis' => $axis,
+                'value' => $value,
+                'source' => $data['source'] ?? null,
+                'confidence' => $data['confidence'] ?? null,
+                'notes' => $data['notes'] ?? null,
+                'suggestable_for_classics' => $data['suggestable_for_classics'] ?? true,
+                'scored_at' => $data['scored_at'] ?? now()->toDateString(),
+            ]);
+        }
+
+        return $this->ingredientProfile($id);
+    }
+
+    /**
+     * PUT /api/cocktails/{id}/slots/{sort}/meta
+     *
+     * Upsert slot meta. Required before any constraints can be added on the slot.
+     *
+     * Body:
+     *   {category, tolerance?, exact_ingredient_id?, also_accept_categories?,
+     *    proof_min?, proof_max?}
+     */
+    public function putSlotMeta(Request $request, int $cocktailId, int $sort): JsonResponse
+    {
+        $cocktail = Cocktail::query()->filterByBar()->where('id', $cocktailId)->first();
+        if (!$cocktail) {
+            return response()->json(['message' => 'Cocktail not found'], 404);
+        }
+
+        $data = $request->validate([
+            'category' => 'required|string|max:64',
+            'tolerance' => 'nullable|string|in:exact,style,any',
+            'exact_ingredient_id' => 'nullable|integer|exists:ingredients,id',
+            'also_accept_categories' => 'nullable|array',
+            'also_accept_categories.*' => 'string|max:64',
+            'proof_min' => 'nullable|numeric|min:0|max:200',
+            'proof_max' => 'nullable|numeric|min:0|max:200',
+        ]);
+
+        if (!CategoryAxes::where('category', $data['category'])->exists()) {
+            return response()->json(['message' => "Unknown category '{$data['category']}'"], 422);
+        }
+
+        SlotMeta::updateOrCreate(
+            ['cocktail_id' => $cocktailId, 'sort' => $sort],
+            [
+                'category' => $data['category'],
+                'tolerance' => $data['tolerance'] ?? 'style',
+                'exact_ingredient_id' => $data['exact_ingredient_id'] ?? null,
+                'also_accept_json' => $data['also_accept_categories'] ?? null,
+                'proof_min' => $data['proof_min'] ?? null,
+                'proof_max' => $data['proof_max'] ?? null,
+            ],
+        );
+
+        return response()->json([
+            'data' => [
+                'cocktail_id' => $cocktailId,
+                'sort' => $sort,
+                'category' => $data['category'],
+                'tolerance' => $data['tolerance'] ?? 'style',
+                'exact_ingredient_id' => $data['exact_ingredient_id'] ?? null,
+                'also_accept_categories' => $data['also_accept_categories'] ?? [],
+                'proof_min' => $data['proof_min'] ?? null,
+                'proof_max' => $data['proof_max'] ?? null,
+            ],
+        ]);
+    }
+
+    /**
+     * PUT /api/cocktails/{id}/slots/{sort}/constraints/{axis}
+     *
+     * Upsert a single-axis constraint on a slot. Two shapes:
+     *   Band:  {"kind": "band", "lo": 2, "hi": 3, "out_weight": 1.5, "hard": false}
+     *   Point: {"kind": "point", "value": 3, "weight": 1.0}
+     *
+     * Validates that the axis belongs to the slot's category.
+     */
+    public function putSlotConstraint(Request $request, int $cocktailId, int $sort, string $axis): JsonResponse
+    {
+        $cocktail = Cocktail::query()->filterByBar()->where('id', $cocktailId)->first();
+        if (!$cocktail) {
+            return response()->json(['message' => 'Cocktail not found'], 404);
+        }
+        $slotMeta = SlotMeta::where('cocktail_id', $cocktailId)->where('sort', $sort)->first();
+        if (!$slotMeta) {
+            return response()->json(['message' => 'Slot meta not declared — PUT /slots/{sort}/meta first'], 422);
+        }
+
+        $axesRow = CategoryAxes::where('category', $slotMeta->category)->first();
+        if (!$axesRow || !in_array($axis, $axesRow->axes(), true)) {
+            return response()->json([
+                'message' => "Axis '{$axis}' is not in category '{$slotMeta->category}'",
+                'valid_axes' => $axesRow?->axes() ?? [],
+            ], 422);
+        }
+
+        $kind = $request->input('kind');
+        if ($kind === 'point') {
+            $data = $request->validate([
+                'kind' => 'required|in:point',
+                'value' => 'required|integer|min:0|max:3',
+                'weight' => 'nullable|numeric|min:0|max:10',
+            ]);
+            SlotConstraint::updateOrCreate(
+                ['cocktail_id' => $cocktailId, 'sort' => $sort, 'axis' => $axis],
+                [
+                    'kind' => 'point',
+                    'point_value' => $data['value'],
+                    'band_lo' => null,
+                    'band_hi' => null,
+                    'weight' => $data['weight'] ?? 1.0,
+                    'out_weight' => 1.0,
+                    'hard' => false,
+                ],
+            );
+        } elseif ($kind === 'band') {
+            $data = $request->validate([
+                'kind' => 'required|in:band',
+                'lo' => 'required|integer|min:0|max:3',
+                'hi' => 'required|integer|min:0|max:3|gte:lo',
+                'out_weight' => 'nullable|numeric|min:0|max:10',
+                'hard' => 'nullable|boolean',
+            ]);
+            SlotConstraint::updateOrCreate(
+                ['cocktail_id' => $cocktailId, 'sort' => $sort, 'axis' => $axis],
+                [
+                    'kind' => 'band',
+                    'point_value' => null,
+                    'band_lo' => $data['lo'],
+                    'band_hi' => $data['hi'],
+                    'weight' => 1.0,
+                    'out_weight' => $data['out_weight'] ?? 1.0,
+                    'hard' => $data['hard'] ?? false,
+                ],
+            );
+        } else {
+            return response()->json(['message' => "kind must be 'point' or 'band'"], 422);
+        }
+
+        $row = SlotConstraint::where('cocktail_id', $cocktailId)
+            ->where('sort', $sort)
+            ->where('axis', $axis)
+            ->first();
+
+        return response()->json([
+            'data' => [
+                'cocktail_id' => $cocktailId,
+                'sort' => $sort,
+                'axis' => $axis,
+                'kind' => $row->kind,
+                'point_value' => $row->point_value,
+                'band_lo' => $row->band_lo,
+                'band_hi' => $row->band_hi,
+                'weight' => (float) $row->weight,
+                'out_weight' => (float) $row->out_weight,
+                'hard' => (bool) $row->hard,
+            ],
+        ]);
+    }
+
+    /**
+     * DELETE /api/cocktails/{id}/slots/{sort}/constraints/{axis}
+     */
+    public function deleteSlotConstraint(int $cocktailId, int $sort, string $axis): JsonResponse
+    {
+        $cocktail = Cocktail::query()->filterByBar()->where('id', $cocktailId)->first();
+        if (!$cocktail) {
+            return response()->json(['message' => 'Cocktail not found'], 404);
+        }
+        $deleted = SlotConstraint::where('cocktail_id', $cocktailId)
+            ->where('sort', $sort)
+            ->where('axis', $axis)
+            ->delete();
+
+        return response()->json(['data' => ['deleted' => $deleted]]);
     }
 
     /**

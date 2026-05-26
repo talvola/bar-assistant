@@ -141,8 +141,16 @@ Route::middleware($apiMiddleware)->group(function () {
     });
     Route::get('/ingredients/{id}/flavor-profile', [FlavorController::class, 'ingredientProfile'])
         ->middleware([EnsureRequestHasBarQuery::class, 'ability:ingredients.read']);
+    Route::put('/ingredients/{id}/flavor-profile', [FlavorController::class, 'putIngredientProfile'])
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:ingredients.write']);
     Route::get('/cocktails/{id}/slots/{sort}/alternatives', [FlavorController::class, 'alternativesForSlot'])
         ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.read']);
+    Route::put('/cocktails/{id}/slots/{sort}/meta', [FlavorController::class, 'putSlotMeta'])
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.write']);
+    Route::put('/cocktails/{id}/slots/{sort}/constraints/{axis}', [FlavorController::class, 'putSlotConstraint'])
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.write']);
+    Route::delete('/cocktails/{id}/slots/{sort}/constraints/{axis}', [FlavorController::class, 'deleteSlotConstraint'])
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.write']);
 
     Route::prefix('images')->middleware(['ability:*'])->group(function () {
         Route::get('/{id}', [ImageController::class, 'show']);
