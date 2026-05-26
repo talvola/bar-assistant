@@ -119,10 +119,10 @@ class FlavorControllerTest extends TestCase
 
         // Put all 3 on shelf.
         foreach ([$plymouth, $jamesGin, $renais] as $ing) {
-            \Kami\Cocktail\Models\BarIngredient::create([
-                'bar_id' => $membership->bar->id,
-                'ingredient_id' => $ing->id,
-            ]);
+            \Kami\Cocktail\Models\BarIngredient::factory()
+                ->for($membership->bar)
+                ->for($ing)
+                ->create();
         }
 
         // A cocktail with one gin slot — Negroni-shape (no need to populate the other ingredients).

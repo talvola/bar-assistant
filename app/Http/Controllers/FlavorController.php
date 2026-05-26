@@ -45,7 +45,8 @@ class FlavorController extends Controller
      */
     public function ingredientProfile(int $id): JsonResponse
     {
-        $ingredient = Ingredient::scopeFilterByBar(Ingredient::query())
+        $ingredient = Ingredient::query()
+            ->filterByBar()
             ->where('id', $id)
             ->first();
         if (!$ingredient) {
@@ -81,7 +82,8 @@ class FlavorController extends Controller
      */
     public function alternativesForSlot(int $cocktailId, int $sort): JsonResponse
     {
-        $cocktail = Cocktail::scopeFilterByBar(Cocktail::query())
+        $cocktail = Cocktail::query()
+            ->filterByBar()
             ->where('id', $cocktailId)
             ->first();
         if (!$cocktail) {

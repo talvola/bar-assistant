@@ -133,15 +133,16 @@ Route::middleware($apiMiddleware)->group(function () {
     });
 
     // Phase B flavor-matching: read-only endpoints in Slice 1. Editing
-    // (PUT/DELETE) endpoints come in Slice 2/3.
-    Route::prefix('flavor')->group(function () {
+    // (PUT/DELETE) endpoints come in Slice 2/3. All routes require
+    // EnsureRequestHasBarQuery so bar() helper resolves inside the controller.
+    Route::prefix('flavor')->middleware([EnsureRequestHasBarQuery::class])->group(function () {
         Route::get('/categories', [FlavorController::class, 'categories'])
             ->middleware(['ability:ingredients.read']);
     });
     Route::get('/ingredients/{id}/flavor-profile', [FlavorController::class, 'ingredientProfile'])
-        ->middleware(['ability:ingredients.read']);
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:ingredients.read']);
     Route::get('/cocktails/{id}/slots/{sort}/alternatives', [FlavorController::class, 'alternativesForSlot'])
-        ->middleware(['ability:cocktails.read']);
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.read']);
 
     Route::prefix('images')->middleware(['ability:*'])->group(function () {
         Route::get('/{id}', [ImageController::class, 'show']);
