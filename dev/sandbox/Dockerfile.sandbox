@@ -1,0 +1,66 @@
+# Sandbox image for Stack 6 — mirrors the production Dockerfile but:
+# - keeps dev composer deps for easier debugging
+# - tags as `bar-assistant:flavor-sandbox`
+# - same entrypoint (serversideup s6 → init.sh → nginx + php-fpm)
+FROM serversideup/php:8.4-fpm-nginx AS sandbox
+
+LABEL org.opencontainers.image.source="https://github.com/talvola/bar-assistant"
+LABEL org.opencontainers.image.description="Phase B flavor matching — sandbox"
+
+ENV S6_CMD_WAIT_FOR_SERVICES=1
+ENV APP_BASE_DIR=/var/www/cocktails
+ENV NGINX_WEBROOT=/var/www/cocktails/public
+ENV PHP_OPCACHE_ENABLE=1
+ENV BAR_ASSISTANT_VERSION=flavor-sandbox
+ENV LOG_OUTPUT_LEVEL=info
+ENV SCOUT_DRIVER=null
+
+USER root
+
+RUN install-php-extensions bcmath intl ffi
+
+RUN apt update \
+    && apt-get install -y sqlite3 git \
+    && apt-get install -y --no-install-recommends libvips42 \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+RUN mkdir -p ${APP_BASE_DIR} && chown -R www-data:www-data ${APP_BASE_DIR}
+
+USER www-data
+WORKDIR ${APP_BASE_DIR}
+
+COPY --chown=www-data:www-data composer.json composer.lock ./
+# Keep dev deps so we can run tinker, factories, tests inside the sandbox.
+RUN composer install --optimize-autoloader --no-scripts
+
+USER root
+COPY ./resources/docker/dist/init.sh /etc/entrypoint.d/99-bass.sh
+COPY ./resources/docker/dist/nginx.conf /etc/nginx/server-opts.d/99-bass.conf
+COPY ./resources/docker/dist/php.ini /usr/local/etc/php/conf.d/zzz-bass-php.ini
+# Sandbox patches for init.sh:
+#  1. storage:link --force so it's idempotent across restarts.
+#  2. Wrap meilisearch + scout commands with `|| true` so they don't crash the
+#     entrypoint when SCOUT_DRIVER=null (no Meilisearch alongside).
+# Sandbox init.sh patches: storage:link --force + flip `set -e` to `set +e` so
+# meilisearch / scout commands no longer crash the entrypoint when there's no
+# Meilisearch container alongside.
+RUN sed -i 's#php artisan storage:link$#php artisan storage:link --force#' /etc/entrypoint.d/99-bass.sh && \
+    sed -i 's#^set -e$#set +e#' /etc/entrypoint.d/99-bass.sh && \
+    chmod 755 /etc/entrypoint.d/99-bass.sh /etc/nginx/server-opts.d/99-bass.conf && \
+    chown www-data:www-data /etc/nginx/server-opts.d/99-bass.conf
+
+USER www-data
+COPY --chown=www-data:www-data . .
+RUN composer dump-autoload --optimize && cp .env.dist .env
+
+USER root
+RUN docker-php-serversideup-s6-init
+
+USER www-data
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD php-fpm-healthcheck || exit 1
+
+VOLUME ["${APP_BASE_DIR}/storage/bar-assistant"]
