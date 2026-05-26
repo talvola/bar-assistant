@@ -19,6 +19,7 @@ use Kami\Cocktail\Http\Controllers\MemberController;
 use Kami\Cocktail\Http\Controllers\RatingController;
 use Kami\Cocktail\Http\Controllers\ServerController;
 use Kami\Cocktail\Http\Controllers\ProfileController;
+use Kami\Cocktail\Http\Controllers\FlavorController;
 use Kami\Cocktail\Http\Controllers\SSOAuthController;
 use Kami\Cocktail\Http\Controllers\CocktailController;
 use Kami\Cocktail\Http\Controllers\GenerateController;
@@ -130,6 +131,17 @@ Route::middleware($apiMiddleware)->group(function () {
             Route::delete('/', [RatingController::class, 'deleteCocktailRating'])->name('ratings.unrate-cocktail');
         });
     });
+
+    // Phase B flavor-matching: read-only endpoints in Slice 1. Editing
+    // (PUT/DELETE) endpoints come in Slice 2/3.
+    Route::prefix('flavor')->group(function () {
+        Route::get('/categories', [FlavorController::class, 'categories'])
+            ->middleware(['ability:ingredients.read']);
+    });
+    Route::get('/ingredients/{id}/flavor-profile', [FlavorController::class, 'ingredientProfile'])
+        ->middleware(['ability:ingredients.read']);
+    Route::get('/cocktails/{id}/slots/{sort}/alternatives', [FlavorController::class, 'alternativesForSlot'])
+        ->middleware(['ability:cocktails.read']);
 
     Route::prefix('images')->middleware(['ability:*'])->group(function () {
         Route::get('/{id}', [ImageController::class, 'show']);
