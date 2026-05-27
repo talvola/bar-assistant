@@ -64,11 +64,61 @@ foreach ($gins as [$name, $abv, $profile]) {
     }
 }
 
-// One cocktail (Negroni-shape) with a gin slot at sort=1, hard floral cap.
-$campari = Ingredient::where('name', 'Campari')->where('bar_id', $bar->id)->first()
-    ?: Ingredient::factory()->for($bar)->create(['name' => 'Campari', 'strength' => 25, 'created_user_id' => $user->id]);
-$vermouth = Ingredient::where('name', 'Sweet Vermouth')->where('bar_id', $bar->id)->first()
-    ?: Ingredient::factory()->for($bar)->create(['name' => 'Sweet Vermouth', 'strength' => 16, 'created_user_id' => $user->id]);
+// Amaro shelf — bitter-citrus aperitivi (for the Negroni Campari slot)
+$amari = [
+    // [name, abv, profile (axes: bitter/sweet/citrus/herbal/dark/mint/root)]
+    ['Campari',                25, ['bitter' => 2, 'sweet' => 2, 'citrus' => 2, 'herbal' => 1, 'dark' => 0, 'mint' => 0, 'root' => 2]],
+    ['Aperol',                 11, ['bitter' => 1, 'sweet' => 3, 'citrus' => 3, 'herbal' => 1, 'dark' => 0, 'mint' => 0, 'root' => 1]],
+    ['Amaro CioCiaro',         30, ['bitter' => 2, 'sweet' => 1, 'citrus' => 3, 'herbal' => 1, 'dark' => 1, 'mint' => 0, 'root' => 2]],
+    ['Fernet-Branca',          39, ['bitter' => 3, 'sweet' => 0, 'citrus' => 0, 'herbal' => 2, 'dark' => 0, 'mint' => 3, 'root' => 2]],
+    ['Amaro Averna',           29, ['bitter' => 2, 'sweet' => 2, 'citrus' => 1, 'herbal' => 1, 'dark' => 3, 'mint' => 0, 'root' => 1]],
+];
+$amariIngredients = [];
+foreach ($amari as [$name, $abv, $profile]) {
+    $ing = Ingredient::where('name', $name)->where('bar_id', $bar->id)->first()
+        ?: Ingredient::factory()->for($bar)->create(['name' => $name, 'strength' => $abv, 'created_user_id' => $user->id]);
+    $amariIngredients[$name] = $ing;
+    IngredientCategory::updateOrCreate(['ingredient_id' => $ing->id], ['category' => 'amaro']);
+    IngredientProfile::where('ingredient_id', $ing->id)->delete();
+    foreach ($profile as $axis => $value) {
+        IngredientProfile::create([
+            'ingredient_id' => $ing->id, 'axis' => $axis, 'value' => $value,
+            'source' => 'tgii', 'confidence' => 'high', 'suggestable_for_classics' => true,
+            'scored_at' => '2026-05-26', 'notes' => null,
+        ]);
+    }
+    if (!BarIngredient::where('bar_id', $bar->id)->where('ingredient_id', $ing->id)->exists()) {
+        BarIngredient::factory()->for($bar)->for($ing)->create();
+    }
+}
+$campari = $amariIngredients['Campari'];
+
+// Vermouth shelf (axes: sweet/bitter/citrus/herbal/floral/fruited)
+$vermouths = [
+    ['Sweet Vermouth',                    16, ['sweet' => 3, 'bitter' => 1, 'citrus' => 1, 'herbal' => 2, 'floral' => 0, 'fruited' => 2]],
+    ['Carpano Antica Formula Vermouth',   17, ['sweet' => 3, 'bitter' => 2, 'citrus' => 1, 'herbal' => 2, 'floral' => 0, 'fruited' => 2]],
+    ['Punt e Mes',                        16, ['sweet' => 3, 'bitter' => 3, 'citrus' => 0, 'herbal' => 2, 'floral' => 0, 'fruited' => 2]],
+    ['Dolin Dry Vermouth',                18, ['sweet' => 1, 'bitter' => 1, 'citrus' => 2, 'herbal' => 2, 'floral' => 1, 'fruited' => 0]],
+];
+$vermouthIngredients = [];
+foreach ($vermouths as [$name, $abv, $profile]) {
+    $ing = Ingredient::where('name', $name)->where('bar_id', $bar->id)->first()
+        ?: Ingredient::factory()->for($bar)->create(['name' => $name, 'strength' => $abv, 'created_user_id' => $user->id]);
+    $vermouthIngredients[$name] = $ing;
+    IngredientCategory::updateOrCreate(['ingredient_id' => $ing->id], ['category' => 'vermouth']);
+    IngredientProfile::where('ingredient_id', $ing->id)->delete();
+    foreach ($profile as $axis => $value) {
+        IngredientProfile::create([
+            'ingredient_id' => $ing->id, 'axis' => $axis, 'value' => $value,
+            'source' => 'tgii', 'confidence' => 'high', 'suggestable_for_classics' => true,
+            'scored_at' => '2026-05-26', 'notes' => null,
+        ]);
+    }
+    if (!BarIngredient::where('bar_id', $bar->id)->where('ingredient_id', $ing->id)->exists()) {
+        BarIngredient::factory()->for($bar)->for($ing)->create();
+    }
+}
+$vermouth = $vermouthIngredients['Sweet Vermouth'];
 
 $cocktail = Cocktail::where('name', 'Sandbox Negroni')->where('bar_id', $bar->id)->first()
     ?: Cocktail::factory()->for($bar)->create([
@@ -97,20 +147,50 @@ foreach ([
     ]);
 }
 
-// Slot meta + constraints on the gin slot
-SlotMeta::updateOrCreate(
-    ['cocktail_id' => $cocktail->id, 'sort' => 1],
-    ['category' => 'gin', 'tolerance' => 'style'],
-);
-foreach ([
-    ['axis' => 'juniper', 'kind' => 'band', 'band_lo' => 2, 'band_hi' => 3, 'weight' => 1.0, 'out_weight' => 1.5, 'hard' => false],
-    ['axis' => 'floral',  'kind' => 'band', 'band_lo' => 0, 'band_hi' => 2, 'weight' => 1.0, 'out_weight' => 2.0, 'hard' => true],
-    ['axis' => 'fruited', 'kind' => 'band', 'band_lo' => 0, 'band_hi' => 1, 'weight' => 1.0, 'out_weight' => 1.5, 'hard' => false],
-] as $c) {
-    SlotConstraint::updateOrCreate(
-        ['cocktail_id' => $cocktail->id, 'sort' => 1, 'axis' => $c['axis']],
-        array_merge($c, ['sort' => 1, 'point_value' => null]),
+// Slot constraints for all three slots — mirrors the Phase A Negroni encoding.
+$slotSpecs = [
+    // sort=1: Gin slot — hard floral cap to disqualify floral-heavy gins.
+    1 => [
+        'meta' => ['category' => 'gin', 'tolerance' => 'style'],
+        'constraints' => [
+            ['axis' => 'juniper', 'kind' => 'band', 'band_lo' => 2, 'band_hi' => 3, 'out_weight' => 1.5, 'hard' => false],
+            ['axis' => 'floral',  'kind' => 'band', 'band_lo' => 0, 'band_hi' => 2, 'out_weight' => 2.0, 'hard' => true],
+            ['axis' => 'fruited', 'kind' => 'band', 'band_lo' => 0, 'band_hi' => 1, 'out_weight' => 1.5, 'hard' => false],
+        ],
+    ],
+    // sort=2: Campari slot — hard mint cap (Fernet would be wrong in a Negroni).
+    2 => [
+        'meta' => ['category' => 'amaro', 'tolerance' => 'style'],
+        'constraints' => [
+            ['axis' => 'bitter',  'kind' => 'band', 'band_lo' => 1, 'band_hi' => 3, 'out_weight' => 1.0, 'hard' => false],
+            ['axis' => 'citrus',  'kind' => 'band', 'band_lo' => 1, 'band_hi' => 3, 'out_weight' => 1.0, 'hard' => false],
+            ['axis' => 'sweet',   'kind' => 'band', 'band_lo' => 1, 'band_hi' => 3, 'out_weight' => 1.0, 'hard' => false],
+            ['axis' => 'dark',    'kind' => 'band', 'band_lo' => 0, 'band_hi' => 1, 'out_weight' => 1.0, 'hard' => false],
+            ['axis' => 'mint',    'kind' => 'band', 'band_lo' => 0, 'band_hi' => 0, 'out_weight' => 2.0, 'hard' => true],
+        ],
+    ],
+    // sort=3: Sweet Vermouth slot — wants sweet + some fruited.
+    3 => [
+        'meta' => ['category' => 'vermouth', 'tolerance' => 'style'],
+        'constraints' => [
+            ['axis' => 'sweet',   'kind' => 'band', 'band_lo' => 2, 'band_hi' => 3, 'out_weight' => 1.0, 'hard' => false],
+            ['axis' => 'fruited', 'kind' => 'band', 'band_lo' => 1, 'band_hi' => 3, 'out_weight' => 1.0, 'hard' => false],
+            ['axis' => 'bitter',  'kind' => 'band', 'band_lo' => 0, 'band_hi' => 2, 'out_weight' => 1.0, 'hard' => false],
+        ],
+    ],
+];
+
+foreach ($slotSpecs as $sort => $spec) {
+    SlotMeta::updateOrCreate(
+        ['cocktail_id' => $cocktail->id, 'sort' => $sort],
+        $spec['meta'],
     );
+    foreach ($spec['constraints'] as $c) {
+        SlotConstraint::updateOrCreate(
+            ['cocktail_id' => $cocktail->id, 'sort' => $sort, 'axis' => $c['axis']],
+            array_merge($c, ['sort' => $sort, 'weight' => 1.0, 'point_value' => null]),
+        );
+    }
 }
 echo "COCKTAIL_ID={$cocktail->id}\n";
 echo "SEEDED\n";
