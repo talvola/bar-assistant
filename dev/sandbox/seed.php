@@ -70,27 +70,31 @@ $campari = Ingredient::where('name', 'Campari')->where('bar_id', $bar->id)->firs
 $vermouth = Ingredient::where('name', 'Sweet Vermouth')->where('bar_id', $bar->id)->first()
     ?: Ingredient::factory()->for($bar)->create(['name' => 'Sweet Vermouth', 'strength' => 16, 'created_user_id' => $user->id]);
 
-$cocktail = Cocktail::where('name', 'Sandbox Negroni')->where('bar_id', $bar->id)->first();
-if (!$cocktail) {
-    $cocktail = Cocktail::factory()->for($bar)->create([
+$cocktail = Cocktail::where('name', 'Sandbox Negroni')->where('bar_id', $bar->id)->first()
+    ?: Cocktail::factory()->for($bar)->create([
         'name' => 'Sandbox Negroni',
         'description' => 'Demo cocktail seeded for Slice 3 — exercises the FlavorAlternatives panel.',
         'instructions' => 'Stir all ingredients with ice; strain into a rocks glass over a large cube; garnish with orange peel.',
         'garnish' => 'Orange peel',
     ]);
-    foreach ([
-        ['sort' => 1, 'ingredient_id' => $ingredients['Plymouth Navy Strength']->id, 'amount' => 1.0, 'units' => 'oz'],
-        ['sort' => 2, 'ingredient_id' => $campari->id, 'amount' => 1.0, 'units' => 'oz'],
-        ['sort' => 3, 'ingredient_id' => $vermouth->id, 'amount' => 1.0, 'units' => 'oz'],
-    ] as $row) {
-        $ci = new CocktailIngredient();
-        $ci->cocktail_id = $cocktail->id;
-        $ci->sort = $row['sort'];
-        $ci->ingredient_id = $row['ingredient_id'];
-        $ci->amount = $row['amount'];
-        $ci->units = $row['units'];
-        $ci->save();
-    }
+
+// Always-run ingredient seed (idempotent — bypass mass-assignment + fill NOT NULL columns
+// that have no default: optional, is_specified).
+\Illuminate\Support\Facades\DB::table('cocktail_ingredients')->where('cocktail_id', $cocktail->id)->delete();
+foreach ([
+    ['sort' => 1, 'ingredient_id' => $ingredients['Plymouth Navy Strength']->id, 'amount' => 1.0, 'units' => 'oz'],
+    ['sort' => 2, 'ingredient_id' => $campari->id, 'amount' => 1.0, 'units' => 'oz'],
+    ['sort' => 3, 'ingredient_id' => $vermouth->id, 'amount' => 1.0, 'units' => 'oz'],
+] as $row) {
+    \Illuminate\Support\Facades\DB::table('cocktail_ingredients')->insert([
+        'cocktail_id' => $cocktail->id,
+        'ingredient_id' => $row['ingredient_id'],
+        'sort' => $row['sort'],
+        'amount' => $row['amount'],
+        'units' => $row['units'],
+        'optional' => 0,
+        'is_specified' => 1,
+    ]);
 }
 
 // Slot meta + constraints on the gin slot
