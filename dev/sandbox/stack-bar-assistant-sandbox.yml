@@ -18,3 +18,23 @@ services:
       - LOG_OUTPUT_LEVEL=info
     volumes:
       - /volume1/Docker/bar-assistant-sandbox/storage:/var/www/cocktails/storage/bar-assistant
+  salt-rim-sandbox:
+    image: salt-rim:flavor-sandbox
+    container_name: salt-rim-flavor-sandbox
+    restart: unless-stopped
+    ports:
+      - "3003:8080"
+    environment:
+      - API_URL=http://192.168.1.64:3002
+      - MEILISEARCH_URL=
+      - DEFAULT_LOCALE=en-US
+      - SALT_RIM_ENV=sandbox
+      - MAILS_ENABLED=false
+      - BILLING_TOKEN=
+      - BILLING_ENABLED=false
+      - BILLING_ENV=
+      - ANALYTICS_HOST=
+      - ANALYTICS_DOMAIN=
+      - ALLOW_REGISTRATION=false
+      - SENTRY_DSN=
+      - REDIRECT_TO_SSO=false
