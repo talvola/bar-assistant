@@ -14,6 +14,9 @@ use Kami\Cocktail\Models\Flavor\IngredientProfile;
 use Kami\Cocktail\Models\Flavor\SlotConstraint;
 use Kami\Cocktail\Models\Flavor\SlotMeta;
 use Kami\Cocktail\Models\Ingredient;
+use Kami\Cocktail\Models\BarIngredient;
+use Kami\Cocktail\Services\Flavor\Bottle;
+use Kami\Cocktail\Services\Flavor\Engine;
 use Kami\Cocktail\Services\Flavor\FlavorService;
 
 /**
@@ -394,6 +397,192 @@ class FlavorController extends Controller
             ->delete();
 
         return response()->json(['data' => ['deleted' => $deleted]]);
+    }
+
+    /**
+     * GET /api/cocktails/{id}/flavor-slots
+     *
+     * Which of a cocktail's ingredient slots have flavor meta / constraints
+     * declared. The caller already has the cocktail's ingredient list (names,
+     * sorts) from /api/cocktails/{id}; this just adds the flavor overlay.
+     *
+     * → {slots_with_meta: [sort,...], slots_with_constraints: [sort,...]}
+     */
+    public function cocktailFlavorSlots(int $cocktailId): JsonResponse
+    {
+        $cocktail = Cocktail::query()->filterByBar()->where('id', $cocktailId)->first();
+        if (!$cocktail) {
+            return response()->json(['message' => 'Cocktail not found'], 404);
+        }
+
+        $withMeta = SlotMeta::where('cocktail_id', $cocktailId)->pluck('sort')->map(fn ($v) => (int) $v)->all();
+        $withConstraints = SlotConstraint::where('cocktail_id', $cocktailId)
+            ->distinct()->pluck('sort')->map(fn ($v) => (int) $v)->all();
+
+        return response()->json([
+            'data' => [
+                'cocktail_id' => $cocktailId,
+                'slots_with_meta' => $withMeta,
+                'slots_with_constraints' => $withConstraints,
+            ],
+        ]);
+    }
+
+    /**
+     * GET /api/cocktails/{id}/flavor-constraints
+     *
+     * All slot meta + per-axis constraints declared for a cocktail.
+     *
+     * → {slots: [{sort, category, tolerance, also_accept_categories,
+     *             proof_min, proof_max, constraints: [{axis, kind, ...}]}]}
+     */
+    public function cocktailFlavorConstraints(int $cocktailId): JsonResponse
+    {
+        $cocktail = Cocktail::query()->filterByBar()->where('id', $cocktailId)->first();
+        if (!$cocktail) {
+            return response()->json(['message' => 'Cocktail not found'], 404);
+        }
+
+        $metas = SlotMeta::where('cocktail_id', $cocktailId)->orderBy('sort')->get();
+        $slots = [];
+        foreach ($metas as $m) {
+            $constraints = SlotConstraint::where('cocktail_id', $cocktailId)
+                ->where('sort', $m->sort)->orderBy('axis')->get()
+                ->map(fn (SlotConstraint $c) => [
+                    'axis' => $c->axis,
+                    'kind' => $c->kind,
+                    'point_value' => $c->point_value,
+                    'band_lo' => $c->band_lo,
+                    'band_hi' => $c->band_hi,
+                    'weight' => (float) $c->weight,
+                    'out_weight' => (float) $c->out_weight,
+                    'hard' => (bool) $c->hard,
+                ])->all();
+            $slots[] = [
+                'sort' => $m->sort,
+                'category' => $m->category,
+                'tolerance' => $m->tolerance,
+                'also_accept_categories' => $m->alsoAccept(),
+                'proof_min' => $m->proof_min,
+                'proof_max' => $m->proof_max,
+                'constraints' => $constraints,
+            ];
+        }
+
+        return response()->json(['data' => ['cocktail_id' => $cocktailId, 'slots' => $slots]]);
+    }
+
+    /**
+     * GET /api/ingredients/{id}/flavor-uses?top_n=10
+     *
+     * Recipes (with declared slot constraints) that welcome this bottle.
+     *
+     * → {ingredient_id, name, category, has_profile, matches: [{cocktail_id,
+     *    cocktail_name, sort, penalty, verdict, disqualified, flags}]}
+     */
+    public function ingredientFlavorUses(int $id): JsonResponse
+    {
+        $ingredient = Ingredient::query()->filterByBar()->where('id', $id)->first();
+        if (!$ingredient) {
+            return response()->json(['message' => 'Ingredient not found'], 404);
+        }
+
+        $topN = (int) request()->integer('top_n', 10);
+        $bottle = $this->service->loadBottle($id);
+        if ($bottle === null) {
+            return response()->json([
+                'data' => [
+                    'ingredient_id' => $id,
+                    'name' => $ingredient->name,
+                    'has_profile' => false,
+                    'matches' => [],
+                ],
+            ]);
+        }
+
+        $slots = $this->service->loadAllSlots();
+        $engine = new Engine();
+        $matches = $engine->usesForBottle($bottle, $slots, $topN);
+
+        // Resolve cocktail names in one query.
+        $cocktailIds = array_values(array_unique(array_map(fn ($m) => $m['slot']->cocktailId, $matches)));
+        $names = Cocktail::whereIn('id', $cocktailIds)->pluck('name', 'id');
+
+        $payload = array_map(fn ($m) => [
+            'cocktail_id' => $m['slot']->cocktailId,
+            'cocktail_name' => $names[$m['slot']->cocktailId] ?? ('#' . $m['slot']->cocktailId),
+            'sort' => $m['slot']->sort,
+            'penalty' => round($m['assessment']->penalty, 2),
+            'verdict' => $m['assessment']->verdict(),
+            'disqualified' => $m['assessment']->disqualified,
+            'flags' => $m['assessment']->flags,
+        ], $matches);
+
+        return response()->json([
+            'data' => [
+                'ingredient_id' => $id,
+                'name' => $bottle->name,
+                'category' => $bottle->category,
+                'has_profile' => true,
+                'matches' => $payload,
+            ],
+        ]);
+    }
+
+    /**
+     * GET /api/flavor/gaps?threshold=3.0&cocktail_ids[]=...
+     *
+     * Slots whose best in-stock bottle is a stretch — the shopping list.
+     *
+     * → {threshold, gaps: [{cocktail_id, cocktail_name, sort, category,
+     *    best_bottle_id, best_bottle_name, penalty, reason}]}
+     */
+    public function gaps(): JsonResponse
+    {
+        $threshold = (float) request()->input('threshold', 3.0);
+        $cocktailIds = request()->input('cocktail_ids');
+        $cocktailIds = is_array($cocktailIds) ? array_map('intval', $cocktailIds) : null;
+
+        $slots = $this->service->loadAllSlots();
+        if ($cocktailIds !== null) {
+            $wanted = array_flip($cocktailIds);
+            $slots = array_values(array_filter($slots, fn ($s) => isset($wanted[$s->cocktailId])));
+        }
+        if (empty($slots)) {
+            return response()->json(['data' => ['threshold' => $threshold, 'gaps' => []]]);
+        }
+
+        // Load all profiled bottles, mark on-shelf via the bar shelf.
+        $bottles = $this->service->loadBottles();
+        $shelf = array_flip($this->shelfIngredientIds());
+        $bottles = array_map(
+            fn (Bottle $b) => new Bottle(
+                id: $b->id, name: $b->name, category: $b->category, profile: $b->profile,
+                proof: $b->proof, inStock: isset($shelf[$b->id]),
+                source: $b->source, confidence: $b->confidence, notes: $b->notes,
+                suggestableForClassics: $b->suggestableForClassics,
+            ),
+            $bottles,
+        );
+
+        $engine = new Engine();
+        $gaps = $engine->findGaps($bottles, $slots, $threshold);
+
+        $cocktailIdsForNames = array_values(array_unique(array_map(fn ($g) => $g['slot']->cocktailId, $gaps)));
+        $names = Cocktail::whereIn('id', $cocktailIdsForNames)->pluck('name', 'id');
+
+        $payload = array_map(fn ($g) => [
+            'cocktail_id' => $g['slot']->cocktailId,
+            'cocktail_name' => $names[$g['slot']->cocktailId] ?? ('#' . $g['slot']->cocktailId),
+            'sort' => $g['slot']->sort,
+            'category' => $g['slot']->category,
+            'best_bottle_id' => $g['bottle']->id ?? null,
+            'best_bottle_name' => $g['bottle']->name ?? null,
+            'penalty' => is_finite($g['penalty']) ? round($g['penalty'], 2) : null,
+            'reason' => $g['reason'],
+        ], $gaps);
+
+        return response()->json(['data' => ['threshold' => $threshold, 'gaps' => $payload]]);
     }
 
     /**

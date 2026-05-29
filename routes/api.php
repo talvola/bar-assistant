@@ -145,6 +145,14 @@ Route::middleware($apiMiddleware)->group(function () {
         ->middleware([EnsureRequestHasBarQuery::class, 'ability:ingredients.write']);
     Route::get('/cocktails/{id}/slots/{sort}/alternatives', [FlavorController::class, 'alternativesForSlot'])
         ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.read']);
+    Route::get('/cocktails/{id}/flavor-slots', [FlavorController::class, 'cocktailFlavorSlots'])
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.read']);
+    Route::get('/cocktails/{id}/flavor-constraints', [FlavorController::class, 'cocktailFlavorConstraints'])
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.read']);
+    Route::get('/ingredients/{id}/flavor-uses', [FlavorController::class, 'ingredientFlavorUses'])
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:ingredients.read']);
+    Route::get('/flavor/gaps', [FlavorController::class, 'gaps'])
+        ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.read']);
     Route::put('/cocktails/{id}/slots/{sort}/meta', [FlavorController::class, 'putSlotMeta'])
         ->middleware([EnsureRequestHasBarQuery::class, 'ability:cocktails.write']);
     Route::put('/cocktails/{id}/slots/{sort}/constraints/{axis}', [FlavorController::class, 'putSlotConstraint'])
