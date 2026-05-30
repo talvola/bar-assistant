@@ -36,6 +36,7 @@ final readonly class CocktailIngredient
         bool $isSpecific = false,
         ?string $note = null,
         array $substitutes = [],
+        int $sortIndex = 0,
     ): self {
         return new self(
             ingredientId: $ingredientId,
@@ -45,6 +46,7 @@ final readonly class CocktailIngredient
             isSpecific: $isSpecific,
             note: $note,
             substitutes: $substitutes,
+            sortIndex: $sortIndex,
         );
     }
 }
